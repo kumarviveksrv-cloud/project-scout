@@ -21,9 +21,9 @@ jobs:
   scout:
     runs-on: ubuntu-latest
     # Engine B fetches real company websites one lead at a time (10s timeout
-    # each, on top of the search/extraction calls), so this runs longer than
-    # Engine A alone did.
-    timeout-minutes: 45
+    # each, on top of the search/extraction calls), and Contact Finder adds
+    # its own per-company search+extraction pass on top of that.
+    timeout-minutes: 50
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -54,3 +54,22 @@ jobs:
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_COMPANIES_TABLE_ID: ${{ secrets.AIRTABLE_COMPANIES_TABLE_ID }}
         run: python company_runner.py --limit 50
+
+      - name: Run Contact Finder
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_COMPANIES_TABLE_ID: ${{ secrets.AIRTABLE_COMPANIES_TABLE_ID }}
+        run: python contact_finder.py
+
+      - name: Send Daily Digest
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
+          AIRTABLE_COMPANIES_TABLE_ID: ${{ secrets.AIRTABLE_COMPANIES_TABLE_ID }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+        run: python digest.py

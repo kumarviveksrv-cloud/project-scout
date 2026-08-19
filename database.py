@@ -35,6 +35,12 @@ class SaveReport:
 
 
 @dataclass
+class UpdateReport:
+    updated: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class TableSetupResult:
     table_id: str
     created: bool  # False if the table already existed and was reused
@@ -84,6 +90,15 @@ class AirtableStore:
         """Engine A convenience wrapper: existing_keys() canonicalised as URLs."""
         return self.existing_keys(config.AIRTABLE_URL_FIELD, normalize=canonical_url)
 
+    def all_records(self, fields: list[str] | None = None) -> list[dict]:
+        """Every record as {"id": ..., "fields": {...}}. Pass `fields` to
+        limit which columns come back (faster, less data); omit for all of
+        them. Used by contact_finder.py and digest.py, which both need
+        several columns plus the record id (existing_keys() only returns a
+        set of one column's values, with no id to update against)."""
+        kwargs = {"fields": fields} if fields else {}
+        return list(self.table.all(**kwargs))
+
     # -- writes ------------------------------------------------------------
 
     def save_records(self, records: list[dict], verbose: bool = True) -> SaveReport:
@@ -103,6 +118,32 @@ class AirtableStore:
                 report.created += len(created)
                 if verbose:
                     print(f"  saved {report.created}/{len(records)}")
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                report.errors.append(message)
+                if verbose:
+                    print(f"  ! batch starting at {start} failed - {message}")
+
+        return report
+
+    def update_records(self, updates: list[dict], verbose: bool = True) -> UpdateReport:
+        """Batch-update existing records. Each dict must be
+        {"id": record_id, "fields": {...}} - pyairtable's UpdateRecordDict
+        shape. Used by contact_finder.py to fill in founder_* columns on
+        rows Engine B already created, without touching anything else on
+        those rows."""
+        report = UpdateReport()
+        if not updates:
+            return report
+
+        size = config.AIRTABLE_BATCH_SIZE
+        for start in range(0, len(updates), size):
+            batch = updates[start : start + size]
+            try:
+                updated = self.table.batch_update(batch, typecast=True)
+                report.updated += len(updated)
+                if verbose:
+                    print(f"  updated {report.updated}/{len(updates)}")
             except Exception as exc:
                 message = f"{type(exc).__name__}: {exc}"
                 report.errors.append(message)
