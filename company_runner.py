@@ -111,9 +111,12 @@ def run_pipeline(
         domain = domain_of(payload.get("company_website", "") or "")
         if not domain:
             domain = searcher.resolve_company_domain(payload.get("company_name", ""))
-        if not domain:
-            return "out_of_criteria", lead, "could not resolve a company website domain"
-
+        # An unresolved domain no longer drops the lead - it's kept with a
+        # blank career_page_url and no HR-lead bonus (company_analyzer.
+        # check_company("") already returns exactly that "undetermined"
+        # shape). Dropping these outright was hiding otherwise-promising
+        # leads whose website just doesn't match their name closely enough
+        # for resolve_company_domain's precision-over-recall matching.
         career = company_analyzer.check_company(domain)
 
         # LinkedIn employee-count fallback - only for a lead that's already
@@ -123,7 +126,7 @@ def run_pipeline(
         employee_count_source = ""
         if payload.get("employee_count") is None:
             _, partial_breakdown = config.score_company(
-                hr_confidently_absent=career.confidently_no_hr_lead,
+                hr_lead_points=career.hr_lead_points,
                 employee_count=None,
                 funding_stage=payload.get("funding_stage", ""),
                 geography=payload.get("geography", ""),
@@ -162,14 +165,20 @@ def run_pipeline(
                     print(f"  [{done}/{len(leads)}] - filtered: {extra}")
             else:
                 company_lead: CompanyLead = extra
-                if company_lead.company_domain in seen_domains or (
-                    not dry_run and company_lead.company_domain in existing_domains
+                domain = company_lead.company_domain
+                # Domain-based dedup only applies when there IS a domain -
+                # an empty string must never be treated as a dedup key, or
+                # every unresolved-domain lead after the first in a batch
+                # would look like a duplicate of it and get silently dropped.
+                if domain and (
+                    domain in seen_domains or (not dry_run and domain in existing_domains)
                 ):
                     report.dropped_out_of_criteria += 1
                     if verbose:
-                        print(f"  [{done}/{len(leads)}] - duplicate domain: {company_lead.company_domain}")
+                        print(f"  [{done}/{len(leads)}] - duplicate domain: {domain}")
                     continue
-                seen_domains.add(company_lead.company_domain)
+                if domain:
+                    seen_domains.add(domain)
                 # Every fully-processed lead is kept and shown, regardless of
                 # score - the >50 save threshold is applied later, only at
                 # the Airtable-write step. A --limit N diagnostic run exists

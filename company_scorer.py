@@ -247,10 +247,19 @@ def passes_filters(payload: dict) -> tuple[bool, str]:
     return True, ""
 
 
+# Mirrors the four tiers in config.py's COMPANY_SCORE_HR_* constants - used
+# only to render score_reason's text, not for any scoring decision.
+_HR_LEAD_LABELS = {
+    config.COMPANY_SCORE_HR_CONFIRMED_ABSENT: "no HR/People role found - best signal",
+    config.COMPANY_SCORE_HR_NO_CAREERS_PAGE: "no careers page found at all - soft positive signal",
+    config.COMPANY_SCORE_HR_DOMAIN_UNRESOLVED: "could not verify",
+    config.COMPANY_SCORE_HR_CONFIRMED_PRESENT: "has an HR/People role",
+}
+
+
 def build_score_reason(
     payload: dict,
     breakdown: dict[str, int],
-    career: CareerPageResult,
     employee_count_source: str = "",
 ) -> str:
     employee_count = payload.get("employee_count")
@@ -262,9 +271,9 @@ def build_score_reason(
             f"Team size: {breakdown['employee_count']} pts "
             "(headcount unstated - needs verification)"
         )
+    hr_label = _HR_LEAD_LABELS.get(breakdown["hr_lead"], "unknown")
     parts = [
-        f"HR lead: {breakdown['hr_lead']}/{config.COMPANY_SCORE_NO_HR_LEAD} "
-        f"({'no HR/People role found' if career.confidently_no_hr_lead else 'has one, or unconfirmed'})",
+        f"HR lead: {breakdown['hr_lead']}/{config.COMPANY_SCORE_HR_CONFIRMED_ABSENT} ({hr_label})",
         team_note,
         f"Stage: {breakdown['funding_stage']} pts ({payload.get('funding_stage') or 'unstated'})",
         f"Geography: {breakdown['geography']} pts ({payload.get('geography') or 'unstated'})",
@@ -280,7 +289,7 @@ def assemble_lead(
     employee_count_source: str = "",
 ) -> CompanyLead:
     total, breakdown = config.score_company(
-        hr_confidently_absent=career.confidently_no_hr_lead,
+        hr_lead_points=career.hr_lead_points,
         employee_count=payload.get("employee_count"),
         funding_stage=payload.get("funding_stage", ""),
         geography=payload.get("geography", ""),
@@ -302,7 +311,7 @@ def assemble_lead(
         has_hr_lead=career.has_hr_lead,
         hr_signals=career.hr_signals,
         company_score=total,
-        score_reason=build_score_reason(payload, breakdown, career, employee_count_source),
+        score_reason=build_score_reason(payload, breakdown, employee_count_source),
         is_real_lead=bool(payload.get("is_real_lead", False)),
         date_added=datetime.now(timezone.utc).date().isoformat(),
         input_tokens=sum(u.input_tokens for u in usages),

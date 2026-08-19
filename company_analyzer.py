@@ -3,17 +3,28 @@
 Fetches a company's public careers page with a plain HTTP GET and searches
 it for HR/People job titles. There is no headless browser here and no
 JavaScript execution - see config.py's HR_TITLE_KEYWORDS comment. That means
-this module distinguishes three outcomes, not two:
+this module distinguishes three `status` outcomes, not two:
 
   - found:         an HR/People title was seen on a page we could read
   - not_found:      the page loaded and was searched, and nothing matched
   - undetermined:  we could not load or make sense of a careers page at all
 
-Only `not_found` is a confident "no HR lead" - `undetermined` must never be
-scored as if it were. Airtable's `has_hr_lead` checkbox collapses `found` to
-True and both other states to False (matching the brief's literal
-true/false spec); the nuance lives in `hr_signals`, a text field, and in
-company_scorer.py's scoring, which only awards the +40 for `not_found`.
+Airtable's `has_hr_lead` checkbox still collapses `found` to True and both
+other states to False (matching the brief's literal true/false spec) - that
+boolean is unchanged by this file's scoring logic.
+
+Scoring, however, is graded rather than binary - `hr_lead_points` gives each
+outcome partial credit rather than lumping every non-`found` case at 0.
+That matters concretely: the companies Engine B targets (pre-seed/seed,
+1-50 people) are exactly the companies *least* likely to have a discoverable
+careers page at all, so treating "no careers page findable" the same as "we
+couldn't check anything" was quietly capping almost every real target's
+score - see config.py's comment on the COMPANY_SCORE_HR_* constants for the
+four tiers and their reasoning. `check_company()` has five return sites but
+only four scored tiers - homepage-unreachable and unparseable-JS-shell are
+both graded as "domain unresolved" (lowest tier), since both mean we learned
+nothing about the company either way; that pairing isn't in the original
+four-tier brief and is this file's own interpretation of it.
 """
 
 from __future__ import annotations
@@ -35,13 +46,9 @@ class CareerPageResult:
     status: str  # "found" | "not_found" | "undetermined"
     has_hr_lead: bool  # Airtable's literal boolean - see module docstring
     hr_signals: str  # human-readable explanation, always populated
+    hr_lead_points: int  # the graded score for this outcome - see module docstring
     career_page_url: str = ""
     matched_keywords: list[str] | None = None
-
-    @property
-    def confidently_no_hr_lead(self) -> bool:
-        """Only this - not `not has_hr_lead` - should feed scoring's +40."""
-        return self.status == "not_found"
 
 
 def _get(url: str) -> requests.Response | None:
@@ -106,7 +113,8 @@ def check_company(domain: str, verbose: bool = False) -> CareerPageResult:
         return CareerPageResult(
             status="undetermined",
             has_hr_lead=False,
-            hr_signals="No company domain was resolved, so no careers page could be checked.",
+            hr_lead_points=config.COMPANY_SCORE_HR_DOMAIN_UNRESOLVED,
+            hr_signals="domain unresolved - needs manual check",
         )
 
     base_url = f"https://{domain}"
@@ -117,6 +125,7 @@ def check_company(domain: str, verbose: bool = False) -> CareerPageResult:
         return CareerPageResult(
             status="undetermined",
             has_hr_lead=False,
+            hr_lead_points=config.COMPANY_SCORE_HR_DOMAIN_UNRESOLVED,
             hr_signals=f"Could not load {base_url} (timeout, DNS failure, or non-2xx status).",
         )
 
@@ -136,9 +145,13 @@ def check_company(domain: str, verbose: bool = False) -> CareerPageResult:
                 break
 
     if career_page is None:
+        # The homepage loaded fine but no careers page exists anywhere we
+        # looked - itself a real (if soft) signal for a very small company,
+        # not just a failed check. See module docstring.
         return CareerPageResult(
             status="undetermined",
             has_hr_lead=False,
+            hr_lead_points=config.COMPANY_SCORE_HR_NO_CAREERS_PAGE,
             hr_signals=(
                 f"Loaded {base_url} but could not find or load a careers/jobs page "
                 "(no matching link, and none of the common /careers, /jobs paths worked)."
@@ -150,6 +163,7 @@ def check_company(domain: str, verbose: bool = False) -> CareerPageResult:
         return CareerPageResult(
             status="undetermined",
             has_hr_lead=False,
+            hr_lead_points=config.COMPANY_SCORE_HR_DOMAIN_UNRESOLVED,
             career_page_url=career_url,
             hr_signals=(
                 f"Loaded {career_url} but the page returned almost no text - likely a "
@@ -163,6 +177,7 @@ def check_company(domain: str, verbose: bool = False) -> CareerPageResult:
         return CareerPageResult(
             status="found",
             has_hr_lead=True,
+            hr_lead_points=config.COMPANY_SCORE_HR_CONFIRMED_PRESENT,
             career_page_url=career_url,
             matched_keywords=matches,
             hr_signals=f"Found HR-related terms on {career_url}: {', '.join(matches)}.",
@@ -171,6 +186,7 @@ def check_company(domain: str, verbose: bool = False) -> CareerPageResult:
     return CareerPageResult(
         status="not_found",
         has_hr_lead=False,
+        hr_lead_points=config.COMPANY_SCORE_HR_CONFIRMED_ABSENT,
         career_page_url=career_url,
         hr_signals=(
             f"Loaded {career_url} and searched its visible text ({len(text):,} chars) "

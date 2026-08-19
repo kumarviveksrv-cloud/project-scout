@@ -582,7 +582,18 @@ HTTP_MAX_CONTENT_CHARS = 200_000  # cap what we parse from any one page
 # can (see scorer.py's consistency-check comment for the failure this
 # avoids). Claude's job in Engine B is extraction and the score_reason
 # narrative, not the point total.
-COMPANY_SCORE_NO_HR_LEAD = 40  # confirmed absent, not merely undetermined
+# HR-lead scoring is graded, not a single confirmed/not-confirmed boolean.
+# A live run showed why the binary version failed in practice: the
+# companies Engine B targets (pre-seed/seed, 1-50 people) are exactly the
+# companies least likely to have a discoverable careers page at all, so
+# "we couldn't check" and "confirmed no HR" ended up scored identically
+# (0), and almost nothing this engine is built to find ever cleared the
+# save threshold. Four tiers, worst to best signal:
+COMPANY_SCORE_HR_CONFIRMED_PRESENT = 0    # careers page loaded and searched - an HR/People role WAS found
+COMPANY_SCORE_HR_DOMAIN_UNRESOLVED = 5    # domain unresolved, homepage unreachable, or an unparseable page - no real signal either way
+COMPANY_SCORE_HR_NO_CAREERS_PAGE = 20     # homepage loads, no careers page found anywhere - a soft positive signal
+COMPANY_SCORE_HR_CONFIRMED_ABSENT = 30    # careers page loaded and searched - no HR/People role found (best signal)
+
 COMPANY_SCORE_EMPLOYEES_1_10 = 15
 COMPANY_SCORE_EMPLOYEES_10_50 = 25
 COMPANY_SCORE_EMPLOYEES_51_100 = 10
@@ -600,32 +611,42 @@ COMPANY_SCORE_STAGE_OTHER_ALLOWED = 12
 COMPANY_SCORE_GEOGRAPHY_INDIA = 15
 COMPANY_SCORE_GEOGRAPHY_OTHER_TARGET = 10
 
-COMPANY_MAX_SCORE = 100  # 40 + 25 + 20 + 15, every criterion at its best case
+# 30 (hr, confirmed absent) + 25 (employees) + 20 (stage) + 15 (geography).
+# Dropped from 100 when the HR-lead ceiling dropped from 40 to 30 above -
+# the other three criteria's weights are unchanged from the original brief,
+# so the achievable maximum is honestly 90, not 100. COMPANY_SAVE_ONLY_ABOVE
+# was NOT rescaled to match - it's still the original 50, which is now a
+# proportionally higher bar (55.6% of max, not 50%) than before. Rescale it
+# too if that wasn't the intent.
+COMPANY_MAX_SCORE = 90
 
 COMPANY_SAVE_ONLY_ABOVE = 50
 
 # LinkedIn employee-count fallback: only worth the extra Tavily call when the
 # company already looks promising on the criteria that don't need it. Gate is
 # the sum of hr_lead + funding_stage + geography (employee_count excluded,
-# since that's the very thing being decided) - see company_runner.py.
+# since that's the very thing being decided) - see company_runner.py. Because
+# hr_lead now grades as high as 30 on its own (previously 40-or-0), this gate
+# fires considerably more often than it used to - a company with just a
+# "no careers page found" signal (20) plus best-case stage and geography
+# (20+15=35) already clears 40 without hr_lead needing to be at its ceiling.
 COMPANY_LINKEDIN_FALLBACK_THRESHOLD = 40
 
 
 def score_company(
     *,
-    hr_confidently_absent: bool,
+    hr_lead_points: int,
     employee_count: int | None,
     funding_stage: str,
     geography: str,
 ) -> tuple[int, dict[str, int]]:
     """The fixed-formula company_score, plus the per-criterion breakdown.
 
-    `hr_confidently_absent` must mean company_analyzer.py successfully
-    loaded the careers page and found no HR keyword - not "couldn't check".
+    `hr_lead_points` comes directly from company_analyzer.CareerPageResult -
+    it is already the graded score for whichever of the four HR-lead tiers
+    applied, not a boolean this function re-derives a score from.
     """
-    breakdown: dict[str, int] = {}
-
-    breakdown["hr_lead"] = COMPANY_SCORE_NO_HR_LEAD if hr_confidently_absent else 0
+    breakdown: dict[str, int] = {"hr_lead": hr_lead_points}
 
     if employee_count is None:
         breakdown["employee_count"] = COMPANY_SCORE_EMPLOYEES_UNSTATED
