@@ -1,0 +1,44 @@
+name: Daily Scout
+
+on:
+  schedule:
+    # 00:30 UTC = 06:00 IST (UTC+5:30), every day.
+    - cron: "30 0 * * *"
+  # Lets you trigger a run manually from the Actions tab, e.g. to test the
+  # workflow right after pushing instead of waiting for the schedule.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Each run makes paid API calls - queue a second trigger rather than
+  # canceling a run that's already spending money.
+  group: daily-scout
+  cancel-in-progress: false
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Project Scout
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_ID: ${{ secrets.AIRTABLE_TABLE_ID }}
+        run: python scout.py --limit 50
