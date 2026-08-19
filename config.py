@@ -789,8 +789,8 @@ COMPANY_CONTACT_FIELD_DESCRIPTIONS: dict[str, str] = {
 # fill in a real key before this can actually send. RESEND_FROM_EMAIL must
 # also be a sender identity/domain verified in that Resend account, or every
 # send attempt returns a 403 regardless of the API key being valid.
-RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "scout@virorah.com")
-DIGEST_TO_EMAIL = "kumarvivek@virorah.com"
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "info@virorah.com")
+DIGEST_TO_EMAIL = "kumarvivek.srv@gmail.com"
 DIGEST_TOP_N_OPPORTUNITIES = 5
 DIGEST_COMPANY_MIN_SCORE = 60
 
