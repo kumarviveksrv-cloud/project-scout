@@ -4,4 +4,6 @@ __pycache__/
 .venv/
 venv/
 scout_run_*.json
+company_test_*.json
+company_run_*.json
 *.log

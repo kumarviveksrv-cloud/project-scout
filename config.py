@@ -484,6 +484,242 @@ AIRTABLE_BATCH_SIZE = 10
 # Save any scored opportunity at or above this total. 0 saves everything.
 SAVE_ONLY_ABOVE = 0
 
+# ==========================================================================
+# ENGINE B: Company Intelligence
+# ==========================================================================
+#
+# A different shape of scouting: instead of searching for consulting job
+# postings, this engine watches funding-news sites for newly funded
+# startups, then checks whether each one already has an HR/People leader.
+# A freshly funded company with no HR lead yet is a warm outbound target for
+# fractional HR work - that is what company_score measures.
+
+# --------------------------------------------------------------------------
+# Sourcing
+# --------------------------------------------------------------------------
+#
+# IMPLEMENTATION NOTE - scraping vs. search API: the brief describes this as
+# "scraping" the five sites directly. Engine B instead reuses the same
+# Tavily Search API Engine A already uses, scoped to these five domains via
+# `include_domains`, rather than hand-writing an HTML parser per site. Two
+# reasons: several of these publishers rate-limit or block non-browser
+# traffic (especially from a shared GitHub Actions IP range), and a per-site
+# scraper breaks silently the next time any of the five redesigns its page -
+# a search API absorbs that. If true HTML scraping of these exact sites is
+# still wanted despite the fragility, that is a different, larger
+# implementation and worth a separate conversation about the tradeoffs.
+COMPANY_SOURCE_DOMAINS: list[str] = [
+    "inc42.com",
+    "yourstory.com",
+    "entrackr.com",
+    "techinasia.com",
+    "wamda.com",
+]
+
+COMPANY_SEARCH_QUERIES: list[str] = [
+    "startup raises pre-seed funding",
+    "startup raises seed funding",
+    "startup raises pre-series A funding",
+    "startup raises series A funding",
+    "startup funding round announced",
+]
+
+COMPANY_TAVILY_SEARCH_DEPTH = "advanced"
+COMPANY_TAVILY_MAX_RESULTS = 10
+COMPANY_TAVILY_DAYS = 7  # funding news goes stale fast - keep this tight
+COMPANY_MIN_SNIPPET_CHARS = 80
+
+# --------------------------------------------------------------------------
+# Filtering
+# --------------------------------------------------------------------------
+
+COMPANY_TARGET_GEOGRAPHIES = ["India", "Singapore", "Indonesia", "UAE", "Saudi Arabia"]
+COMPANY_ALLOWED_FUNDING_STAGES = ["pre-seed", "seed", "pre-series a", "series a"]
+COMPANY_MAX_EMPLOYEES_SECONDARY = 100  # anything above this is filtered out entirely
+
+# --------------------------------------------------------------------------
+# Career-page HR-lead detection
+# --------------------------------------------------------------------------
+#
+# HONEST LIMITATION: company_analyzer.py fetches a company's public careers
+# page with a plain HTTP GET - there is no headless browser and no
+# JavaScript execution. A growing share of career pages are single-page
+# apps, or embed a Greenhouse/Lever/Ashby widget that renders client-side;
+# a plain GET sees an empty shell on those. When that happens the result is
+# reported as *undetermined*, never as a confirmed "no HR lead" - conflating
+# the two would quietly wreck the scoring, since "undetermined" is common
+# and "confirmed absent" is the entire point of the +40 score. See
+# CareerPageResult in company_analyzer.py.
+HR_TITLE_KEYWORDS: list[str] = [
+    "hr", "people", "chro", "chief people officer", "chief people",
+    "head of hr", "head of people", "hr manager", "people operations",
+    "people ops", "human resources", "vp of people", "vp people",
+    "director of people", "hrbp", "hr business partner", "talent partner",
+]
+
+CAREER_LINK_TEXT_HINTS = [
+    "career", "careers", "job", "jobs", "join us", "join our team",
+    "we're hiring", "hiring", "open roles", "open positions", "work with us",
+]
+CAREER_PATH_GUESSES = [
+    "/careers", "/careers/", "/jobs", "/jobs/", "/join-us",
+    "/about/careers", "/company/careers", "/about-us/careers",
+]
+
+HTTP_USER_AGENT = "Mozilla/5.0 (compatible; ProjectScoutBot/1.0; company research)"
+HTTP_TIMEOUT_SECONDS = 10
+HTTP_MAX_CONTENT_CHARS = 200_000  # cap what we parse from any one page
+
+# --------------------------------------------------------------------------
+# Scoring - a fixed point formula, not a Claude rubric
+# --------------------------------------------------------------------------
+#
+# Unlike Engine A (where "how good a fit" is a judgment call), every one of
+# these four criteria is a fact Python can check directly once Claude has
+# extracted the structured fields and company_analyzer.py has checked the
+# careers page. Doing the arithmetic in Python means the total can never
+# disagree with its own inputs the way an LLM-computed score occasionally
+# can (see scorer.py's consistency-check comment for the failure this
+# avoids). Claude's job in Engine B is extraction and the score_reason
+# narrative, not the point total.
+COMPANY_SCORE_NO_HR_LEAD = 40  # confirmed absent, not merely undetermined
+COMPANY_SCORE_EMPLOYEES_1_10 = 15
+COMPANY_SCORE_EMPLOYEES_10_50 = 25
+COMPANY_SCORE_EMPLOYEES_51_100 = 10
+# Funding articles very often just don't state headcount - that's normal,
+# not a red flag, so unstated no longer scores the same as "outside every
+# band" (0). It scores below every *known* band, on the theory that a
+# verified number should always beat a guess.
+COMPANY_SCORE_EMPLOYEES_UNSTATED = 10
+COMPANY_SCORE_STAGE_SEED_OR_PRESERIES_A = 20
+# Not specified in the original brief, which only scored seed/pre-series A
+# explicitly. Pre-seed and Series A are still in-scope per the filtering
+# criteria, so they get partial credit here rather than zero - change this
+# if you want them weighted differently.
+COMPANY_SCORE_STAGE_OTHER_ALLOWED = 12
+COMPANY_SCORE_GEOGRAPHY_INDIA = 15
+COMPANY_SCORE_GEOGRAPHY_OTHER_TARGET = 10
+
+COMPANY_MAX_SCORE = 100  # 40 + 25 + 20 + 15, every criterion at its best case
+
+COMPANY_SAVE_ONLY_ABOVE = 50
+
+# LinkedIn employee-count fallback: only worth the extra Tavily call when the
+# company already looks promising on the criteria that don't need it. Gate is
+# the sum of hr_lead + funding_stage + geography (employee_count excluded,
+# since that's the very thing being decided) - see company_runner.py.
+COMPANY_LINKEDIN_FALLBACK_THRESHOLD = 40
+
+
+def score_company(
+    *,
+    hr_confidently_absent: bool,
+    employee_count: int | None,
+    funding_stage: str,
+    geography: str,
+) -> tuple[int, dict[str, int]]:
+    """The fixed-formula company_score, plus the per-criterion breakdown.
+
+    `hr_confidently_absent` must mean company_analyzer.py successfully
+    loaded the careers page and found no HR keyword - not "couldn't check".
+    """
+    breakdown: dict[str, int] = {}
+
+    breakdown["hr_lead"] = COMPANY_SCORE_NO_HR_LEAD if hr_confidently_absent else 0
+
+    if employee_count is None:
+        breakdown["employee_count"] = COMPANY_SCORE_EMPLOYEES_UNSTATED
+    elif 1 <= employee_count <= 10:
+        breakdown["employee_count"] = COMPANY_SCORE_EMPLOYEES_1_10
+    elif 11 <= employee_count <= 50:
+        breakdown["employee_count"] = COMPANY_SCORE_EMPLOYEES_10_50
+    elif 51 <= employee_count <= COMPANY_MAX_EMPLOYEES_SECONDARY:
+        breakdown["employee_count"] = COMPANY_SCORE_EMPLOYEES_51_100
+    else:
+        breakdown["employee_count"] = 0
+
+    stage = (funding_stage or "").strip().lower()
+    if stage in ("seed", "pre-series a"):
+        breakdown["funding_stage"] = COMPANY_SCORE_STAGE_SEED_OR_PRESERIES_A
+    elif stage in COMPANY_ALLOWED_FUNDING_STAGES:  # pre-seed, series a
+        breakdown["funding_stage"] = COMPANY_SCORE_STAGE_OTHER_ALLOWED
+    else:
+        breakdown["funding_stage"] = 0
+
+    geo = (geography or "").strip().lower()
+    if geo == "india":
+        breakdown["geography"] = COMPANY_SCORE_GEOGRAPHY_INDIA
+    elif geo in (g.lower() for g in COMPANY_TARGET_GEOGRAPHIES):
+        breakdown["geography"] = COMPANY_SCORE_GEOGRAPHY_OTHER_TARGET
+    else:
+        breakdown["geography"] = 0
+
+    return sum(breakdown.values()), breakdown
+
+
+# --------------------------------------------------------------------------
+# Airtable - a second table in the same base
+# --------------------------------------------------------------------------
+
+COMPANY_AIRTABLE_TABLE_NAME = "Companies"
+# Populated after setup.py (or company_runner.py's own setup step) creates
+# the table and prints its ID - put that ID here or in AIRTABLE_COMPANIES_TABLE_ID
+# in .env. Table IDs are not secrets; they identify a table, not a credential.
+AIRTABLE_COMPANIES_TABLE_ID = os.getenv("AIRTABLE_COMPANIES_TABLE_ID", "")
+
+# Field names are used as-is - Airtable column names, not display labels to
+# translate. Kept snake_case to match the spec exactly.
+COMPANY_AIRTABLE_FIELDS: dict[str, str] = {
+    "company_name": "company_name",
+    "sector": "sector",
+    "funding_stage": "funding_stage",
+    "funding_amount": "funding_amount",
+    "employee_count": "employee_count",
+    "geography": "geography",
+    "career_page_url": "career_page_url",
+    "has_hr_lead": "has_hr_lead",
+    "hr_signals": "hr_signals",
+    "company_score": "company_score",
+    "score_reason": "score_reason",
+    "funding_source": "funding_source",
+    "date_funded": "date_funded",
+    "status": "status",
+    "date_added": "date_added",
+}
+
+COMPANY_STATUS_VALUES = ["new", "reviewing", "targeted", "contacted", "won"]
+
+COMPANY_AIRTABLE_FIELD_TYPES: dict[str, tuple[str, dict | None]] = {
+    "company_name": ("singleLineText", None),
+    "sector": ("singleLineText", None),
+    "funding_stage": ("singleLineText", None),
+    "funding_amount": ("singleLineText", None),
+    "employee_count": ("number", {"precision": 0}),
+    "geography": ("singleLineText", None),
+    "career_page_url": ("url", None),
+    "has_hr_lead": ("checkbox", {"icon": "check", "color": "greenBright"}),
+    "hr_signals": ("multilineText", None),
+    "company_score": ("number", {"precision": 0}),
+    "score_reason": ("multilineText", None),
+    "funding_source": ("singleLineText", None),
+    "date_funded": ("date", {"dateFormat": {"name": "iso", "format": "YYYY-MM-DD"}}),
+    "status": (
+        "singleSelect",
+        {"choices": [{"name": s} for s in COMPANY_STATUS_VALUES]},
+    ),
+    "date_added": ("date", {"dateFormat": {"name": "iso", "format": "YYYY-MM-DD"}}),
+}
+
+COMPANY_AIRTABLE_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "career_page_url": "Deduplication is by website domain, not this field - see company_search.py.",
+    "has_hr_lead": "True only if company_analyzer.py found an HR/People title on the careers page.",
+    "hr_signals": "What was found or why the check was inconclusive (e.g. JS-rendered page).",
+    "company_score": f"Fixed-formula score out of {COMPANY_MAX_SCORE} - see config.score_company().",
+    "status": "Manual triage field. The pipeline always inserts 'new'; update it yourself.",
+}
+
+COMPANY_AIRTABLE_DEDUPE_FIELD = COMPANY_AIRTABLE_FIELDS["career_page_url"]
+
 # --------------------------------------------------------------------------
 # Console output
 # --------------------------------------------------------------------------
