@@ -809,6 +809,248 @@ COMPANY_AIRTABLE_FIELD_DESCRIPTIONS: dict[str, str] = {
 COMPANY_AIRTABLE_DEDUPE_FIELD = COMPANY_AIRTABLE_FIELDS["career_page_url"]
 
 # ==========================================================================
+# ENGINE C: Career Signal (wellfound_runner.py)
+# ==========================================================================
+#
+# Instead of watching funding news, this engine watches job boards for
+# early-stage startups actively posting HR/People leadership roles. A company
+# searching for a Head of People or VP People is the warmest possible outbound
+# target: they've diagnosed the HR gap, approved budget, and haven't filled it.
+# The pitch: fractional HR while the permanent search continues.
+
+# --------------------------------------------------------------------------
+# Sourcing
+# --------------------------------------------------------------------------
+
+WELLFOUND_SOURCE_DOMAINS: list[str] = [
+    # Startup-first job boards where stage/funding context is often stated
+    "wellfound.com",           # formerly AngelList Talent - best startup signal
+    "workatastartup.com",      # YC's job board - well-funded, early-stage bias
+    # Broad job boards that index startup postings
+    "lever.co",                # ATS used by many startups - postings are public
+    "ashbyhq.com",             # ATS used by Series A/B startups
+    "greenhouse.io",           # ATS used by growth-stage startups
+    # Regional startup boards
+    "iimjobs.com",             # India HR/leadership roles
+    "foundit.in",              # India startup jobs (formerly Monster India)
+]
+
+WELLFOUND_SEARCH_QUERIES: list[str] = [
+    # Wellfound / AngelList-specific queries
+    "head of people startup wellfound",
+    "VP people early stage startup wellfound",
+    "HR manager seed stage startup wellfound",
+    "people operations lead startup wellfound India",
+    "chief people officer startup wellfound",
+    # YC / top-tier startup boards
+    "head of people startup YC hiring",
+    "VP people operations startup hiring India remote",
+    # Generic startup HR leadership
+    "head of people early stage startup hiring",
+    "HR manager seed stage startup hiring",
+    "people operations lead series A startup hiring",
+    "chief people officer startup hiring",
+    "VP people culture startup hiring remote",
+    "first HR hire startup head of people",
+    # India/SEA-specific
+    "head of people startup India hiring",
+    "HR lead startup India seed series A",
+    "people operations startup Singapore hiring",
+    "HR manager startup UAE hiring",
+]
+
+WELLFOUND_TAVILY_SEARCH_DEPTH = "advanced"
+WELLFOUND_TAVILY_MAX_RESULTS = 10
+WELLFOUND_MIN_SNIPPET_CHARS = 80
+
+# --------------------------------------------------------------------------
+# Scoring - fixed-formula (same philosophy as Engine B)
+# --------------------------------------------------------------------------
+#
+# Five criteria, all computable from Claude's extracted facts:
+#   hr_role_seniority  - how senior/impactful is the HR gap?
+#   employee_count     - smallest companies are the warmest targets
+#   funding_stage      - seed/series A = actively investing in growth
+#   geography          - India and target geographies get preference
+#   sector             - startup-first sectors score higher
+
+# Role seniority: the more senior the gap, the bigger the fractional opportunity
+WELLFOUND_SCORE_ROLE_CHRO_VP = 30          # CHRO, CPO, VP People/Culture
+WELLFOUND_SCORE_ROLE_HEAD_DIRECTOR = 25    # Head of People, Director of People
+WELLFOUND_SCORE_ROLE_MANAGER = 20          # HR Manager (as first hire), People Ops Lead
+WELLFOUND_SCORE_ROLE_OTHER_HR = 10         # Any other HR role that passed the filter
+
+# Employee count: smaller = warmer (less likely to have informal HR coverage)
+WELLFOUND_SCORE_EMPLOYEES_1_10 = 20
+WELLFOUND_SCORE_EMPLOYEES_10_50 = 25       # sweet spot: big enough to feel the pain
+WELLFOUND_SCORE_EMPLOYEES_51_100 = 15
+WELLFOUND_SCORE_EMPLOYEES_UNSTATED = 12    # still useful, just less certain
+
+# Funding stage
+WELLFOUND_SCORE_STAGE_SEED_PRESERIES_A = 20
+WELLFOUND_SCORE_STAGE_OTHER_ALLOWED = 12   # pre-seed or series a
+WELLFOUND_SCORE_STAGE_UNSTATED = 5         # present on job board = probably funded
+
+# Geography (same weights as Engine B for consistency)
+WELLFOUND_SCORE_GEOGRAPHY_INDIA = 15
+WELLFOUND_SCORE_GEOGRAPHY_OTHER_TARGET = 10
+WELLFOUND_SCORE_GEOGRAPHY_REMOTE = 8       # globally remote = accessible but less certain
+WELLFOUND_SCORE_GEOGRAPHY_UNKNOWN = 3      # still counts if other criteria are strong
+
+# Sector preference
+WELLFOUND_SCORE_SECTOR_TOP = 10            # SaaS, AI, Fintech, HRTech, startup
+WELLFOUND_SCORE_SECTOR_MID = 6             # tech-adjacent, professional services
+WELLFOUND_SCORE_SECTOR_OTHER = 2           # any other
+
+# 30 (role) + 25 (employees) + 20 (stage) + 15 (geography) + 10 (sector) = 100
+WELLFOUND_MAX_SCORE = 100
+WELLFOUND_SAVE_ONLY_ABOVE = 50
+
+_WELLFOUND_TOP_SECTORS = frozenset({
+    "saas", "ai", "artificial intelligence", "fintech", "hrtech", "hr tech",
+    "hr technology", "startup", "tech", "technology", "software",
+})
+_WELLFOUND_MID_SECTORS = frozenset({
+    "e-commerce", "ecommerce", "marketplace", "edtech", "healthtech",
+    "proptech", "legaltech", "professional services", "consulting",
+})
+
+
+def score_hr_job(
+    *,
+    role_title: str,
+    employee_count: int | None,
+    funding_stage: str,
+    geography: str,
+    sector: str,
+) -> tuple[int, dict[str, int]]:
+    """Fixed-formula score for an Engine C job lead.
+
+    Returns (total, breakdown_dict). All arithmetic - no model judgment here.
+    """
+    breakdown: dict[str, int] = {}
+
+    # --- HR role seniority ---
+    title_lower = (role_title or "").strip().lower()
+    if any(kw in title_lower for kw in ("chro", "chief people", "vp people", "vp of people",
+                                         "vp culture", "vice president people")):
+        breakdown["hr_role_seniority"] = WELLFOUND_SCORE_ROLE_CHRO_VP
+    elif any(kw in title_lower for kw in ("head of people", "director of people",
+                                            "head of hr", "director of hr",
+                                            "director people", "people director")):
+        breakdown["hr_role_seniority"] = WELLFOUND_SCORE_ROLE_HEAD_DIRECTOR
+    elif any(kw in title_lower for kw in ("hr manager", "people manager",
+                                            "people operations lead", "people ops lead",
+                                            "chief of staff")):
+        breakdown["hr_role_seniority"] = WELLFOUND_SCORE_ROLE_MANAGER
+    else:
+        breakdown["hr_role_seniority"] = WELLFOUND_SCORE_ROLE_OTHER_HR
+
+    # --- Employee count ---
+    if employee_count is None:
+        breakdown["employee_count"] = WELLFOUND_SCORE_EMPLOYEES_UNSTATED
+    elif 1 <= employee_count <= 10:
+        breakdown["employee_count"] = WELLFOUND_SCORE_EMPLOYEES_1_10
+    elif 11 <= employee_count <= 50:
+        breakdown["employee_count"] = WELLFOUND_SCORE_EMPLOYEES_10_50
+    elif 51 <= employee_count <= COMPANY_MAX_EMPLOYEES_SECONDARY:
+        breakdown["employee_count"] = WELLFOUND_SCORE_EMPLOYEES_51_100
+    else:
+        breakdown["employee_count"] = 0
+
+    # --- Funding stage ---
+    stage = (funding_stage or "").strip().lower()
+    if stage in ("seed", "pre-series a"):
+        breakdown["funding_stage"] = WELLFOUND_SCORE_STAGE_SEED_PRESERIES_A
+    elif stage in ("pre-seed", "series a"):
+        breakdown["funding_stage"] = WELLFOUND_SCORE_STAGE_OTHER_ALLOWED
+    elif not stage:
+        breakdown["funding_stage"] = WELLFOUND_SCORE_STAGE_UNSTATED
+    else:
+        breakdown["funding_stage"] = 0
+
+    # --- Geography ---
+    geo = (geography or "").strip().lower()
+    if geo == "india":
+        breakdown["geography"] = WELLFOUND_SCORE_GEOGRAPHY_INDIA
+    elif geo in (g.lower() for g in COMPANY_TARGET_GEOGRAPHIES):
+        breakdown["geography"] = WELLFOUND_SCORE_GEOGRAPHY_OTHER_TARGET
+    elif geo in ("remote", "global", "global remote", "worldwide"):
+        breakdown["geography"] = WELLFOUND_SCORE_GEOGRAPHY_REMOTE
+    elif not geo:
+        breakdown["geography"] = WELLFOUND_SCORE_GEOGRAPHY_UNKNOWN
+    else:
+        breakdown["geography"] = 0
+
+    # --- Sector ---
+    sector_lower = (sector or "").strip().lower()
+    if any(s in sector_lower for s in _WELLFOUND_TOP_SECTORS):
+        breakdown["sector"] = WELLFOUND_SCORE_SECTOR_TOP
+    elif any(s in sector_lower for s in _WELLFOUND_MID_SECTORS):
+        breakdown["sector"] = WELLFOUND_SCORE_SECTOR_MID
+    elif sector_lower:
+        breakdown["sector"] = WELLFOUND_SCORE_SECTOR_OTHER
+    else:
+        breakdown["sector"] = 0
+
+    return sum(breakdown.values()), breakdown
+
+
+# --------------------------------------------------------------------------
+# Airtable - a third table in the same base
+# --------------------------------------------------------------------------
+
+WELLFOUND_AIRTABLE_TABLE_NAME = "JobLeads"
+AIRTABLE_JOBLEADS_TABLE_ID = os.getenv("AIRTABLE_JOBLEADS_TABLE_ID", "")
+
+WELLFOUND_STATUS_VALUES = ["new", "reviewing", "targeted", "contacted", "won"]
+
+WELLFOUND_AIRTABLE_FIELDS: dict[str, str] = {
+    "company_name": "company_name",
+    "role_title": "role_title",
+    "sector": "sector",
+    "funding_stage": "funding_stage",
+    "employee_count": "employee_count",
+    "geography": "geography",
+    "company_domain": "company_domain",
+    "is_remote_eligible": "is_remote_eligible",
+    "job_score": "job_score",
+    "score_reason": "score_reason",
+    "source_domain": "source_domain",
+    "lead_url": "lead_url",
+    "status": "status",
+    "date_added": "date_added",
+}
+
+WELLFOUND_AIRTABLE_FIELD_TYPES: dict[str, tuple[str, dict | None]] = {
+    "company_name": ("singleLineText", None),
+    "role_title": ("singleLineText", None),
+    "sector": ("singleLineText", None),
+    "funding_stage": ("singleLineText", None),
+    "employee_count": ("number", {"precision": 0}),
+    "geography": ("singleLineText", None),
+    "company_domain": ("singleLineText", None),
+    "is_remote_eligible": ("checkbox", {"icon": "check", "color": "greenBright"}),
+    "job_score": ("number", {"precision": 0}),
+    "score_reason": ("multilineText", None),
+    "source_domain": ("singleLineText", None),
+    "lead_url": ("url", None),
+    "status": (
+        "singleSelect",
+        {"choices": [{"name": s} for s in WELLFOUND_STATUS_VALUES]},
+    ),
+    "date_added": ("date", {"dateFormat": {"name": "iso", "format": "YYYY-MM-DD"}}),
+}
+
+WELLFOUND_AIRTABLE_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "company_domain": "Deduplication key. Engine C skips domains already in this table or in Companies (Engine B).",
+    "is_remote_eligible": "True if the role can be filled by someone working remotely from India.",
+    "job_score": f"Fixed-formula score out of {WELLFOUND_MAX_SCORE} - see config.score_hr_job().",
+    "status": "Manual triage field. The pipeline always inserts 'new'; update it yourself.",
+    "lead_url": "Direct URL to the job posting. Check this first - postings disappear fast.",
+}
+
+# ==========================================================================
 # FEATURE: Contact Finder (contact_finder.py)
 # ==========================================================================
 #

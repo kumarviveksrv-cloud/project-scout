@@ -55,6 +55,16 @@ jobs:
           AIRTABLE_COMPANIES_TABLE_ID: ${{ secrets.AIRTABLE_COMPANIES_TABLE_ID }}
         run: python company_runner.py --limit 50
 
+      - name: Run Engine C - Career Signal
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_COMPANIES_TABLE_ID: ${{ secrets.AIRTABLE_COMPANIES_TABLE_ID }}
+          AIRTABLE_JOBLEADS_TABLE_ID: ${{ secrets.AIRTABLE_JOBLEADS_TABLE_ID }}
+        run: python wellfound_runner.py --limit 50
+
       - name: Run Contact Finder
         env:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
