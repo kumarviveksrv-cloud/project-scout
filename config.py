@@ -189,11 +189,11 @@ MIN_SNIPPET_CHARS = 80
 # Scoring (Claude)
 # --------------------------------------------------------------------------
 
-MODEL = "claude-sonnet-5"
-# Claude Sonnet 5 thinks by default (adaptive thinking), and max_tokens caps
-# thinking + response together. Leave headroom or responses truncate mid-answer.
-MAX_TOKENS = 8000
-EFFORT = "medium"  # low | medium | high | xhigh | max
+MODEL = "claude-haiku-4-5"
+# Claude Haiku 4-5 does not support extended thinking; effort must be "low".
+# max_tokens only needs to cover the structured JSON response itself.
+MAX_TOKENS = 4000
+EFFORT = "low"  # low | medium | high | xhigh | max
 SCORING_WORKERS = 4  # parallel scoring requests
 SCORING_MAX_RETRIES = 3
 
