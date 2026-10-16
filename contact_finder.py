@@ -160,10 +160,7 @@ class ContactFinder:
                 model=config.MODEL,
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
-                output_config={
-                    "effort": config.EFFORT,
-                    "format": {"type": "json_schema", "schema": CANDIDATE_SCHEMA},
-                },
+                output_config=config.make_output_config(CANDIDATE_SCHEMA),
                 messages=[{"role": "user", "content": content}],
             )
         except (anthropic.RateLimitError, anthropic.APIStatusError, anthropic.APIConnectionError):

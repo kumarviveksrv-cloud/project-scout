@@ -187,10 +187,7 @@ class CompanyExtractor:
             model=config.MODEL,
             max_tokens=config.MAX_TOKENS,
             system=SYSTEM_PROMPT,
-            output_config={
-                "effort": config.EFFORT,
-                "format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA},
-            },
+            output_config=config.make_output_config(EXTRACTION_SCHEMA),
             messages=[{"role": "user", "content": content}],
         )
         self.usage.add(response.usage)

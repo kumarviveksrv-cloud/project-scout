@@ -374,10 +374,7 @@ class OpportunityScorer:
             model=config.MODEL,
             max_tokens=config.MAX_TOKENS,
             system=SYSTEM_PROMPT,
-            output_config={
-                "effort": config.EFFORT,
-                "format": {"type": "json_schema", "schema": SCORE_SCHEMA},
-            },
+            output_config=config.make_output_config(SCORE_SCHEMA),
             messages=[{"role": "user", "content": content}],
         )
 

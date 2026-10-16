@@ -225,6 +225,29 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     input_price, output_price = pricing
     return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
 
+
+# Models that accept the `effort` parameter in output_config. Haiku-class
+# models do not support extended thinking and reject `effort` outright.
+_EFFORT_SUPPORTED_MODELS: frozenset[str] = frozenset({
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+})
+
+
+def make_output_config(schema: dict) -> dict:
+    """Build the output_config dict for a messages.create() call.
+
+    Includes `effort` only for models that support it.  Haiku 4-5 (and any
+    future non-thinking model) will receive only the format key.
+    """
+    cfg: dict = {"format": {"type": "json_schema", "schema": schema}}
+    if MODEL in _EFFORT_SUPPORTED_MODELS:
+        cfg["effort"] = EFFORT
+    return cfg
+
+
 # (field name, max points, what the criterion measures)
 SCORING_CRITERIA: list[tuple[str, int, str]] = [
     (
