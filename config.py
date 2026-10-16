@@ -539,28 +539,46 @@ SAVE_ONLY_ABOVE = 0
 # still wanted despite the fragility, that is a different, larger
 # implementation and worth a separate conversation about the tradeoffs.
 COMPANY_SOURCE_DOMAINS: list[str] = [
+    # --- India ---
     "inc42.com",
     "yourstory.com",
     "entrackr.com",
+    "vccircle.com",
+    "economictimes.indiatimes.com",
+    "livemint.com",
+    # --- SEA / Middle East ---
     "techinasia.com",
+    "dealstreetasia.com",
     "wamda.com",
+    "magnitt.com",
+    # --- Global early-stage ---
+    "techcrunch.com",
+    "producthunt.com",
 ]
 
 COMPANY_SEARCH_QUERIES: list[str] = [
-    # Queries are written to match how inc42, yourstory, entrackr, techinasia
-    # and wamda actually write funding-news headlines. Generic verb phrases
-    # like "startup raises seed funding" return 0 results from Tavily's news
-    # index because headline phrasing varies - these are more robust.
+    # India-specific — matches headline phrasing on inc42, yourstory, entrackr,
+    # vccircle, ET Startups and Mint.
     "seed funding round India startup",
-    "pre-seed funding raised India",
+    "pre-seed funding raised India startup",
     "series A funding India startup",
+    "raises seed round India",
+    "raises pre-seed India",
+    "secures seed funding India",
+    "seed round startup India 2026",
+    # SEA / Middle East — matches techinasia, dealstreetasia, wamda, magnitt.
     "seed round raised startup Singapore",
-    "funding raised startup UAE",
-    "pre-seed round raised",
-    "raises seed round",
-    "raises series A",
-    "raises pre-seed",
+    "startup raises funding Singapore 2026",
+    "seed funding startup UAE",
+    "funding raised startup Saudi Arabia",
+    "seed round startup Southeast Asia",
+    # Global early-stage — matches TechCrunch Startups tag and ProductHunt launches.
+    "raises seed round startup",
+    "raises pre-seed round",
+    "raises series A startup",
     "secures funding round startup",
+    "pre-seed funding startup 2026",
+    "seed funding startup 2026",
 ]
 
 COMPANY_TAVILY_SEARCH_DEPTH = "advanced"
@@ -573,7 +591,16 @@ COMPANY_MIN_SNIPPET_CHARS = 80
 # Filtering
 # --------------------------------------------------------------------------
 
-COMPANY_TARGET_GEOGRAPHIES = ["India", "Singapore", "Indonesia", "UAE", "Saudi Arabia"]
+COMPANY_TARGET_GEOGRAPHIES = [
+    "India",
+    "Singapore",
+    "Indonesia",
+    "UAE",
+    "Saudi Arabia",
+    "Malaysia",
+    "Vietnam",
+    "Philippines",
+]
 COMPANY_ALLOWED_FUNDING_STAGES = ["pre-seed", "seed", "pre-series a", "series a"]
 COMPANY_MAX_EMPLOYEES_SECONDARY = 100  # anything above this is filtered out entirely
 
