@@ -125,7 +125,11 @@ SEARCH_QUERIES: list[str] = [
 QUERY_SUFFIX = ""
 
 TAVILY_SEARCH_DEPTH = "advanced"  # "basic" (1 credit) or "advanced" (2 credits)
-TAVILY_TOPIC = "news"  # "general" or "news"
+TAVILY_TOPIC = "general"  # "general" or "news"
+# NOTE: "general" does not support the `days` recency filter - Tavily ignores
+# it. Recency for Engine A is implicitly handled by the queries themselves
+# ("seeking", "looking for", "hiring") which match active posts rather than
+# articles about the market.
 TAVILY_MAX_RESULTS = 10  # per query
 TAVILY_DAYS = 30  # recency window; only applied when TAVILY_TOPIC == "news"
 TAVILY_INCLUDE_ANSWER = False
@@ -543,16 +547,26 @@ COMPANY_SOURCE_DOMAINS: list[str] = [
 ]
 
 COMPANY_SEARCH_QUERIES: list[str] = [
-    "startup raises pre-seed funding",
-    "startup raises seed funding",
-    "startup raises pre-series A funding",
-    "startup raises series A funding",
-    "startup funding round announced",
+    # Queries are written to match how inc42, yourstory, entrackr, techinasia
+    # and wamda actually write funding-news headlines. Generic verb phrases
+    # like "startup raises seed funding" return 0 results from Tavily's news
+    # index because headline phrasing varies - these are more robust.
+    "seed funding round India startup",
+    "pre-seed funding raised India",
+    "series A funding India startup",
+    "seed round raised startup Singapore",
+    "funding raised startup UAE",
+    "pre-seed round raised",
+    "raises seed round",
+    "raises series A",
+    "raises pre-seed",
+    "secures funding round startup",
 ]
 
 COMPANY_TAVILY_SEARCH_DEPTH = "advanced"
 COMPANY_TAVILY_MAX_RESULTS = 10
-COMPANY_TAVILY_DAYS = 7  # funding news goes stale fast - keep this tight
+COMPANY_TAVILY_DAYS = 14  # widened from 7: Tavily's news index can lag 3-5 days,
+# so a 7-day window was regularly returning 0 results for many queries.
 COMPANY_MIN_SNIPPET_CHARS = 80
 
 # --------------------------------------------------------------------------
