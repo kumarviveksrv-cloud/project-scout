@@ -30,6 +30,7 @@ from company_scorer import (
     passes_filters,
 )
 from company_search import CompanyFundingSearcher, domain_of
+import known_keys_cache
 from database import AirtableStore, SaveReport
 
 RULE = "=" * config.CONSOLE_WIDTH
@@ -235,7 +236,7 @@ def main() -> int:
     try:
         searcher = CompanyFundingSearcher()
     except Exception as exc:
-        print(f"\nCould not start Tavily: {exc}")
+        print(f"\nCould not start Brave search: {exc}")
         return 1
 
     search_report = searcher.run()
@@ -267,10 +268,10 @@ def main() -> int:
                 table_id = result.table_id
                 print(f"  Table ID: {table_id} - add this to .env as AIRTABLE_COMPANIES_TABLE_ID")
             store = AirtableStore(table_id=table_id)
-            existing_domains = store.existing_keys(
-                config.COMPANY_AIRTABLE_DEDUPE_FIELD, normalize=domain_of
+            existing_domains = known_keys_cache.load(
+                "company_domains", normalize=domain_of
             )
-            print(f"\n  {len(existing_domains)} company domains already stored")
+            print(f"\n  {len(existing_domains)} company domains loaded from local cache")
         except Exception as exc:
             print(f"\nCould not prepare Airtable: {type(exc).__name__}: {exc}")
             print("Refusing to continue - scoring now would create duplicates.")
@@ -326,6 +327,13 @@ def main() -> int:
         if save_report.errors:
             print("\n  Some records failed to save. Check that every column in")
             print("  config.COMPANY_AIRTABLE_FIELDS exists in the Companies table with that exact name.")
+        # Update the local dedup cache with domains we just wrote.
+        saved_domains = [
+            c.career_page_url for c in save_worthy if c.career_page_url
+        ]
+        if saved_domains:
+            known_keys_cache.update("company_domains", saved_domains)
+            print(f"  Cache updated: +{len(saved_domains)} domains")
     elif args.dry_run:
         print("\n  --dry-run: nothing written to Airtable")
 

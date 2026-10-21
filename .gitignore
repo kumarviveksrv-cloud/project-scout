@@ -9,3 +9,5 @@ company_run_*.json
 contact_test_*.json
 contact_run_*.json
 *.log
+# Local dedup cache — persisted in GitHub Actions via actions/cache, never committed
+.known_keys_cache.json

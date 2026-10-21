@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # needed for actions/cache to write cache entries
 
 concurrency:
   # Each run makes paid API calls - queue a second trigger rather than
@@ -36,6 +37,17 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      # Restore the dedup cache from a previous run (if it exists).
+      # The cache file grows as new records are saved; it lives across runs
+      # so engines never need to read from Airtable just to dedup.
+      # Key is fixed so the same entry is always restored and overwritten.
+      - name: Restore dedup cache
+        uses: actions/cache@v4
+        with:
+          path: .known_keys_cache.json
+          key: scout-dedup-cache
+          restore-keys: scout-dedup-cache
 
       - name: Run Engine A - Opportunities
         env:
@@ -73,6 +85,16 @@ jobs:
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_COMPANIES_TABLE_ID: ${{ secrets.AIRTABLE_COMPANIES_TABLE_ID }}
         run: python contact_finder.py
+
+      # Save the updated dedup cache so the next run picks it up.
+      # actions/cache@v4 with the same fixed key always saves on a cache miss
+      # the first time, then updates in-place on subsequent runs.
+      - name: Save dedup cache
+        if: always()   # save even if an engine step failed (partial progress is still useful)
+        uses: actions/cache@v4
+        with:
+          path: .known_keys_cache.json
+          key: scout-dedup-cache
 
       - name: Send Daily Digest
         env:

@@ -40,6 +40,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import config
 from company_search import CompanyFundingSearcher, domain_of
+import known_keys_cache
 from database import AirtableStore, SaveReport
 from wellfound_scorer import (
     JobExtractor,
@@ -212,7 +213,7 @@ def main() -> int:
     try:
         searcher = HRJobSearcher()
     except Exception as exc:
-        print(f"\nCould not start Tavily: {exc}")
+        print(f"\nCould not start Brave search: {exc}")
         return 1
 
     search_report = searcher.run()
@@ -250,27 +251,17 @@ def main() -> int:
                 table_id = result.table_id
                 print(f"  Table ID: {table_id} - add this to .env as AIRTABLE_JOBLEADS_TABLE_ID")
             store = AirtableStore(table_id=table_id)
-            existing_domains = store.existing_keys(
-                config.WELLFOUND_AIRTABLE_FIELDS["company_domain"],
-                normalize=domain_of,
+            # Load both caches: JobLeads own domains + Engine B company domains.
+            # This cross-dedup is free (no Airtable read calls needed).
+            existing_domains = known_keys_cache.load(
+                "jobleads_domains", normalize=domain_of
             )
-            # Also pull in Engine B's known companies to avoid showing the same
-            # company twice across engines.
-            if config.AIRTABLE_COMPANIES_TABLE_ID:
-                try:
-                    engine_b_store = AirtableStore(table_id=config.AIRTABLE_COMPANIES_TABLE_ID)
-                    engine_b_domains = engine_b_store.existing_keys(
-                        config.COMPANY_AIRTABLE_FIELDS["career_page_url"],
-                        normalize=domain_of,
-                    )
-                    cross_overlap = len(existing_domains & engine_b_domains)
-                    existing_domains |= engine_b_domains
-                    print(f"  {len(existing_domains)} known domains ({cross_overlap} shared with Engine B)")
-                except Exception as exc:
-                    print(f"  Could not load Engine B domains for cross-dedup: {exc}")
-                    print(f"  {len(existing_domains)} domains from JobLeads table only")
-            else:
-                print(f"  {len(existing_domains)} domains from JobLeads table")
+            engine_b_domains = known_keys_cache.load(
+                "company_domains", normalize=domain_of
+            )
+            cross_overlap = len(existing_domains & engine_b_domains)
+            existing_domains |= engine_b_domains
+            print(f"  {len(existing_domains)} known domains loaded from local cache ({cross_overlap} shared with Engine B)")
         except Exception as exc:
             print(f"\nCould not prepare Airtable: {type(exc).__name__}: {exc}")
             print("Refusing to continue - scoring now would create duplicates.")
@@ -322,6 +313,11 @@ def main() -> int:
         if save_report.errors:
             print("\n  Some records failed to save. Check that every column in")
             print("  config.WELLFOUND_AIRTABLE_FIELDS exists in the JobLeads table with that exact name.")
+        # Update the local dedup cache with domains we just wrote.
+        saved_domains = [j.company_domain for j in save_worthy if j.company_domain]
+        if saved_domains:
+            known_keys_cache.update("jobleads_domains", saved_domains)
+            print(f"  Cache updated: +{len(saved_domains)} domains")
     elif args.dry_run:
         print("\n  --dry-run: nothing written to Airtable")
 

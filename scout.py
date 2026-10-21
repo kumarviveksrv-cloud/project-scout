@@ -163,7 +163,7 @@ def main() -> int:
     try:
         searcher = BraveSearcher()
     except Exception as exc:
-        print(f"\nCould not start Tavily: {exc}")
+        print(f"\nCould not start Brave search: {exc}")
         return 1
 
     search_report = searcher.run()
@@ -185,22 +185,25 @@ def main() -> int:
         print("\nNothing to score. Try widening config.SEARCH_QUERIES.")
         return 0
 
-    # -- 2. dedupe against Airtable ---------------------------------------
+    # -- 2. dedupe against local cache (no Airtable read call needed) -------
+    import known_keys_cache
     store: AirtableStore | None = None
     if not args.dry_run:
         header("DEDUPLICATING")
+        known = known_keys_cache.load(
+            "opportunity_urls", normalize=canonical_url
+        )
+        print(f"\n  {len(known)} URLs loaded from local cache")
         try:
             store = AirtableStore()
-            known = store.existing_urls()
         except Exception as exc:
-            print(f"\nCould not read Airtable: {type(exc).__name__}: {exc}")
-            print("Refusing to continue - scoring now would create duplicates.")
+            print(f"\nCould not connect to Airtable: {type(exc).__name__}: {exc}")
+            print("Refusing to continue - write would fail anyway.")
             print("Fix the connection, or re-run with --dry-run to score only.")
             return 1
 
         before = len(found)
         found = [o for o in found if o.url not in known]
-        print(f"\n  {len(known)} URLs already stored")
         print(f"  {before - len(found)} already seen, {len(found)} new")
 
         if not found:
@@ -237,6 +240,15 @@ def main() -> int:
         if save_report.errors:
             print("\n  Some records failed to save. Check that every column in")
             print("  config.AIRTABLE_FIELDS exists in your table with that exact name.")
+        # Update the local dedup cache with URLs we just wrote (only those
+        # that actually made it in — above-threshold ones in save_all).
+        saved_urls = [
+            s.url for s in scored
+            if s.total_score >= config.SAVE_ONLY_ABOVE and s.url
+        ]
+        if saved_urls:
+            known_keys_cache.update("opportunity_urls", saved_urls)
+            print(f"  Cache updated: +{len(saved_urls)} URLs")
     elif args.dry_run:
         print("\n  --dry-run: nothing written to Airtable")
 
