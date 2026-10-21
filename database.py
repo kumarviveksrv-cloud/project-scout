@@ -13,6 +13,7 @@ than editing this file.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -78,13 +79,35 @@ class AirtableStore:
         Raises on failure. Silently returning an empty set here would
         duplicate the whole table on the next run, so the caller must
         decide what to do.
+
+        Retries with exponential back-off on Airtable 429 rate-limit errors
+        (up to 5 attempts: waits 5s, 10s, 20s, 40s before giving up).
         """
-        keys: set[str] = set()
-        for record in self.table.all(fields=[field_name]):
-            value = record.get("fields", {}).get(field_name)
-            if value:
-                keys.add(normalize(str(value)))
-        return keys
+        max_attempts = 5
+        delay = 5  # seconds before first retry
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                keys: set[str] = set()
+                for record in self.table.all(fields=[field_name]):
+                    value = record.get("fields", {}).get(field_name)
+                    if value:
+                        keys.add(normalize(str(value)))
+                return keys
+            except Exception as exc:
+                last_exc = exc
+                exc_str = str(exc)
+                # Retry only on rate-limit (429) errors
+                if "429" not in exc_str and "RetryError" not in type(exc).__name__:
+                    raise
+                if attempt < max_attempts:
+                    print(
+                        f"\n  Airtable rate limit hit (attempt {attempt}/{max_attempts})."
+                        f" Waiting {delay}s before retry..."
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+        raise last_exc  # type: ignore[misc]
 
     def existing_urls(self) -> set[str]:
         """Engine A convenience wrapper: existing_keys() canonicalised as URLs."""
