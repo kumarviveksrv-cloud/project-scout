@@ -1,10 +1,17 @@
 """Funding-news search layer for Engine B (Company Intelligence).
 
-Searches the five configured publishers for recent funding announcements via
-the Tavily Search API (see config.py's "IMPLEMENTATION NOTE" for why this is
-a search API and not five hand-written HTML scrapers), then resolves each
+Searches the configured publishers for recent funding announcements via
+the Brave Search API (see config.py's "IMPLEMENTATION NOTE" for why this is
+a search API and not hand-written HTML scrapers), then resolves each
 lead's company name toward an actual website domain - the thing Engine B
 ultimately dedupes and scores on.
+
+Brave News endpoint: https://api.search.brave.com/res/v1/news/search
+Brave Web endpoint:  https://api.search.brave.com/res/v1/web/search
+Auth: X-Subscription-Token header (BRAVE_API_KEY in config/env).
+
+include_domains workaround: Brave has no include_domains param, so we embed
+'site:domain1 OR site:domain2' operators directly in the query string.
 """
 
 from __future__ import annotations
@@ -14,10 +21,20 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from tavily import TavilyClient
+import requests
 
 import config
 from search import canonical_url
+
+_BRAVE_NEWS_URL = "https://api.search.brave.com/res/v1/news/search"
+_BRAVE_WEB_URL = "https://api.search.brave.com/res/v1/web/search"
+
+
+def _build_site_filter(domains: list[str]) -> str:
+    """Return a 'site:a.com OR site:b.com' query clause for Brave."""
+    if not domains:
+        return ""
+    return " OR ".join(f"site:{d}" for d in domains)
 
 
 @dataclass
@@ -93,26 +110,40 @@ def domain_of(url: str) -> str:
 
 
 class CompanyFundingSearcher:
-    """Searches the five funding-news publishers for recent rounds."""
+    """Searches the configured funding-news publishers for recent rounds."""
 
     def __init__(self, api_key: str | None = None) -> None:
-        key = api_key or config.TAVILY_API_KEY
+        key = api_key or config.BRAVE_API_KEY
         if not key:
-            raise ValueError("TAVILY_API_KEY is not set. Check your .env file.")
-        self.client = TavilyClient(api_key=key)
+            raise ValueError("BRAVE_API_KEY is not set. Check your .env file.")
+        self._headers = {
+            "X-Subscription-Token": key,
+            "Accept": "application/json",
+        }
+        # Build the site-filter clause once; it's the same for every query.
+        self._site_filter = _build_site_filter(config.COMPANY_SOURCE_DOMAINS)
 
     def _search_one(self, query: str) -> list[dict]:
-        response = self.client.search(
-            query=query,
-            search_depth=config.COMPANY_TAVILY_SEARCH_DEPTH,
-            topic="news",
-            days=config.COMPANY_TAVILY_DAYS,
-            max_results=config.COMPANY_TAVILY_MAX_RESULTS,
-            include_answer=False,
-            include_raw_content=False,
-            include_domains=config.COMPANY_SOURCE_DOMAINS,
+        # Embed site: filter into the query so results are scoped to our
+        # funding-news publishers, matching Tavily's include_domains behaviour.
+        full_query = f"{query} ({self._site_filter})" if self._site_filter else query
+        params: dict = {
+            "q": full_query,
+            "count": config.COMPANY_BRAVE_MAX_RESULTS,
+            "safesearch": "off",
+            # Brave News freshness: "pd" = past day, "pw" = past week,
+            # "pm" = past month, "py" = past year.
+            "freshness": config.COMPANY_BRAVE_FRESHNESS,
+        }
+        resp = requests.get(
+            _BRAVE_NEWS_URL,
+            headers=self._headers,
+            params=params,
+            timeout=20,
         )
-        return response.get("results", []) or []
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results", []) or []
 
     def run(self, queries: list[str] | None = None, verbose: bool = True) -> CompanySearchReport:
         queries = queries if queries is not None else config.COMPANY_SEARCH_QUERIES
@@ -144,13 +175,16 @@ class CompanyFundingSearcher:
                     continue
 
                 title = (item.get("title") or "").strip()
-                snippet = (item.get("content") or "").strip()
+                # Brave News uses "description" for the snippet (not "content")
+                snippet = (item.get("description") or "").strip()
                 if len(f"{title} {snippet}".strip()) < config.COMPANY_MIN_SNIPPET_CHARS:
                     report.dropped_thin += 1
                     continue
 
                 seen.add(url)
                 kept += 1
+                # Brave News provides "age" (relative) or "page_age" (ISO date)
+                pub_date = (item.get("page_age") or item.get("age") or "").strip()
                 report.leads.append(
                     RawFundingLead(
                         title=title,
@@ -158,7 +192,7 @@ class CompanyFundingSearcher:
                         snippet=snippet,
                         source_domain=domain_of(url),
                         source_query=query,
-                        published_date=(item.get("published_date") or "").strip(),
+                        published_date=pub_date,
                     )
                 )
 
@@ -169,33 +203,34 @@ class CompanyFundingSearcher:
         return report
 
     def find_employee_count_via_linkedin(self, company_name: str) -> int | None:
-        """One extra Tavily call, spent only on companies worth it.
+        """One extra Brave Web call, spent only on companies worth it.
 
         Called only from company_runner.py, and only when a lead already
         scores above COMPANY_LINKEDIN_FALLBACK_THRESHOLD on everything except
         employee count - see config.py's comment on that constant. Reads the
         search snippet's own text (a "company size" field LinkedIn exposes in
-        its own metadata), not a scraped page - this is a Tavily search
-        result, not a fetch of linkedin.com.
+        its own metadata), not a scraped page.
         """
         name = company_name.strip()
         if not name:
             return None
         try:
-            response = self.client.search(
-                query=f"{name} LinkedIn",
-                search_depth="basic",
-                max_results=5,
-                include_answer=False,
+            resp = requests.get(
+                _BRAVE_WEB_URL,
+                headers=self._headers,
+                params={"q": f"{name} LinkedIn", "count": 5, "safesearch": "off"},
+                timeout=20,
             )
+            resp.raise_for_status()
+            results = resp.json().get("web", {}).get("results", []) or []
         except Exception:
             return None
 
-        for item in response.get("results", []) or []:
+        for item in results:
             if "linkedin.com" not in domain_of(item.get("url", "")):
                 continue
             count = extract_employee_count_from_text(
-                f"{item.get('title', '')} {item.get('content', '')}"
+                f"{item.get('title', '')} {item.get('description', '')}"
             )
             if count is not None:
                 return count
@@ -205,7 +240,7 @@ class CompanyFundingSearcher:
         """Best-effort lookup of a company's official website domain.
 
         Funding articles frequently name the startup without linking its
-        site. This spends one extra Tavily call per company that needs it
+        site. This spends one extra Brave Web call per company that needs it
         (company_scorer.py only calls this when extraction couldn't find a
         URL in the article text itself) rather than guessing a TLD.
         """
@@ -213,16 +248,16 @@ class CompanyFundingSearcher:
         if not name:
             return ""
         try:
-            response = self.client.search(
-                query=f"{name} official website",
-                search_depth="basic",
-                max_results=5,
-                include_answer=False,
+            resp = requests.get(
+                _BRAVE_WEB_URL,
+                headers=self._headers,
+                params={"q": f"{name} official website", "count": 5, "safesearch": "off"},
+                timeout=20,
             )
+            resp.raise_for_status()
+            results = resp.json().get("web", {}).get("results", []) or []
         except Exception:
             return ""
-
-        results = response.get("results", []) or []
         blocked = config.BLOCKED_DOMAINS | set(config.COMPANY_SOURCE_DOMAINS)
         slug = re.sub(r"[^a-z0-9]", "", name.lower())
 

@@ -8,7 +8,7 @@ Engine B companies.
 
 Runs over every Companies row where status == "new" and
 company_score >= config.CONTACT_MIN_SCORE (and founder_linkedin_url isn't
-already filled in - see eligible_companies()). Searches Tavily for
+already filled in - see eligible_companies()). Searches Brave for
 "{company_name} founder CEO LinkedIn", keeps only results whose URL already
 contains linkedin.com/in/, and only writes a URL that came from one of
 those real search results - see config.py's comment on this feature for how
@@ -24,11 +24,13 @@ import sys
 from dataclasses import asdict, dataclass, field
 
 import anthropic
-from tavily import TavilyClient
+import requests
 
 import config
 from database import AirtableStore
 from scorer import SOURCE_CLOSE, SOURCE_OPEN, UsageTotals
+
+_BRAVE_WEB_URL = "https://api.search.brave.com/res/v1/web/search"
 
 RULE = "=" * config.CONSOLE_WIDTH
 
@@ -112,33 +114,41 @@ class ContactResult:
 
 
 class ContactFinder:
-    def __init__(self, tavily_key: str | None = None, anthropic_key: str | None = None) -> None:
-        tkey = tavily_key or config.TAVILY_API_KEY
+    def __init__(self, brave_key: str | None = None, anthropic_key: str | None = None) -> None:
+        bkey = brave_key or config.BRAVE_API_KEY
         akey = anthropic_key or config.ANTHROPIC_API_KEY
-        if not tkey:
-            raise ValueError("TAVILY_API_KEY is not set. Check your .env file.")
+        if not bkey:
+            raise ValueError("BRAVE_API_KEY is not set. Check your .env file.")
         if not akey:
             raise ValueError("ANTHROPIC_API_KEY is not set. Check your .env file.")
-        self.tavily = TavilyClient(api_key=tkey)
+        self._brave_headers = {
+            "X-Subscription-Token": bkey,
+            "Accept": "application/json",
+        }
         self.client = anthropic.Anthropic(api_key=akey)
         self.usage = UsageTotals()
 
     def _search_linkedin_candidates(self, company_name: str) -> list[dict]:
         query = config.CONTACT_SEARCH_QUERY_TEMPLATE.format(company_name=company_name)
         try:
-            response = self.tavily.search(
-                query=query,
-                search_depth="basic",
-                max_results=config.CONTACT_TAVILY_MAX_RESULTS,
-                include_answer=False,
+            resp = requests.get(
+                _BRAVE_WEB_URL,
+                headers=self._brave_headers,
+                params={
+                    "q": query,
+                    "count": config.CONTACT_BRAVE_MAX_RESULTS,
+                    "safesearch": "off",
+                },
+                timeout=20,
             )
+            resp.raise_for_status()
+            results = resp.json().get("web", {}).get("results", []) or []
         except Exception:
             return []
-        results = response.get("results", []) or []
         return [r for r in results if LINKEDIN_PROFILE_RE.search(r.get("url", ""))]
 
     def find_founder(self, company_record_id: str, company_name: str) -> ContactResult:
-        """No Claude call is made at all if the Tavily search returns zero
+        """No Claude call is made at all if the Brave search returns zero
         linkedin.com/in/ results - nothing to disambiguate, no reason to pay
         for a call whose answer is already known to be "not found"."""
         result = ContactResult(company_record_id=company_record_id, company_name=company_name)
@@ -147,7 +157,8 @@ class ContactFinder:
             return result
 
         listing = "\n\n".join(
-            f"[{i}] {c.get('title', '')}\n{c.get('content', '')}"
+            # Brave uses "description" for snippets (not "content")
+            f"[{i}] {c.get('title', '')}\n{c.get('description', '')}"
             for i, c in enumerate(candidates)
         )
         content = (
@@ -247,7 +258,7 @@ def main() -> int:
 
     missing = [
         m for m in config.missing_credentials()
-        if m in ("ANTHROPIC_API_KEY", "TAVILY_API_KEY", "AIRTABLE_TOKEN", "AIRTABLE_BASE_ID")
+        if m in ("ANTHROPIC_API_KEY", "BRAVE_API_KEY", "AIRTABLE_TOKEN", "AIRTABLE_BASE_ID")
     ]
     if missing:
         print("\nMissing or placeholder credentials in .env:")

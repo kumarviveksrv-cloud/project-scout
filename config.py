@@ -15,7 +15,7 @@ load_dotenv()
 # Credentials
 # --------------------------------------------------------------------------
 
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN", "")
 AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID", "")
@@ -36,7 +36,7 @@ def is_placeholder(value: str) -> bool:
 def missing_credentials() -> list[str]:
     """Names of env vars that are empty or still hold the .env template value."""
     required = {
-        "TAVILY_API_KEY": TAVILY_API_KEY,
+        "BRAVE_API_KEY": BRAVE_API_KEY,
         "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
         "AIRTABLE_TOKEN": AIRTABLE_TOKEN,
         "AIRTABLE_BASE_ID": AIRTABLE_BASE_ID,
@@ -120,20 +120,11 @@ SEARCH_QUERIES: list[str] = [
     "hiring interim HR leader remote engagement",
 ]
 
-# Appended to every query. Empty because recency is handled by TAVILY_DAYS and
-# the queries already carry the intent - a suffix here just dilutes them.
+# Appended to every query. Empty - the queries already carry the intent and
+# a suffix here just dilutes them.
 QUERY_SUFFIX = ""
 
-TAVILY_SEARCH_DEPTH = "advanced"  # "basic" (1 credit) or "advanced" (2 credits)
-TAVILY_TOPIC = "general"  # "general" or "news"
-# NOTE: "general" does not support the `days` recency filter - Tavily ignores
-# it. Recency for Engine A is implicitly handled by the queries themselves
-# ("seeking", "looking for", "hiring") which match active posts rather than
-# articles about the market.
-TAVILY_MAX_RESULTS = 10  # per query
-TAVILY_DAYS = 30  # recency window; only applied when TAVILY_TOPIC == "news"
-TAVILY_INCLUDE_ANSWER = False
-TAVILY_INCLUDE_RAW_CONTENT = False
+BRAVE_MAX_RESULTS = 10  # per query (Brave Web Search, max 20 on free tier)
 
 # Domains that never carry a real engagement lead: job-board aggregators,
 # recruitment agencies and social platforms. Matched on the domain itself and
@@ -529,15 +520,14 @@ SAVE_ONLY_ABOVE = 0
 # --------------------------------------------------------------------------
 #
 # IMPLEMENTATION NOTE - scraping vs. search API: the brief describes this as
-# "scraping" the five sites directly. Engine B instead reuses the same
-# Tavily Search API Engine A already uses, scoped to these five domains via
-# `include_domains`, rather than hand-writing an HTML parser per site. Two
-# reasons: several of these publishers rate-limit or block non-browser
-# traffic (especially from a shared GitHub Actions IP range), and a per-site
-# scraper breaks silently the next time any of the five redesigns its page -
-# a search API absorbs that. If true HTML scraping of these exact sites is
-# still wanted despite the fragility, that is a different, larger
-# implementation and worth a separate conversation about the tradeoffs.
+# "scraping" the sites directly. Engine B instead uses the Brave Search API
+# scoped to these domains via 'site:' operators embedded in the query string,
+# rather than hand-writing an HTML parser per site. Two reasons: several of
+# these publishers rate-limit or block non-browser traffic (especially from a
+# shared GitHub Actions IP range), and a per-site scraper breaks silently the
+# next time any site redesigns its page - a search API absorbs that. If true
+# HTML scraping is still wanted despite the fragility, that is a different,
+# larger implementation and worth a separate conversation about the tradeoffs.
 COMPANY_SOURCE_DOMAINS: list[str] = [
     # --- India ---
     "inc42.com",
@@ -581,10 +571,11 @@ COMPANY_SEARCH_QUERIES: list[str] = [
     "seed funding startup 2026",
 ]
 
-COMPANY_TAVILY_SEARCH_DEPTH = "advanced"
-COMPANY_TAVILY_MAX_RESULTS = 10
-COMPANY_TAVILY_DAYS = 14  # widened from 7: Tavily's news index can lag 3-5 days,
-# so a 7-day window was regularly returning 0 results for many queries.
+COMPANY_BRAVE_MAX_RESULTS = 10  # per query (Brave News Search)
+# Brave News freshness param: "pd"=past day, "pw"=past week, "pm"=past month
+# Using "pm" (past month) to match the previously effective ~14-day window;
+# Brave's news index can lag a few days so a "pw" window risks empty results.
+COMPANY_BRAVE_FRESHNESS = "pm"
 COMPANY_MIN_SNIPPET_CHARS = 80
 
 # --------------------------------------------------------------------------
@@ -859,8 +850,7 @@ WELLFOUND_SEARCH_QUERIES: list[str] = [
     "HR manager startup UAE hiring",
 ]
 
-WELLFOUND_TAVILY_SEARCH_DEPTH = "advanced"
-WELLFOUND_TAVILY_MAX_RESULTS = 10
+WELLFOUND_BRAVE_MAX_RESULTS = 10  # per query (Brave Web Search)
 WELLFOUND_MIN_SNIPPET_CHARS = 80
 
 # --------------------------------------------------------------------------
@@ -1060,13 +1050,13 @@ WELLFOUND_AIRTABLE_FIELD_DESCRIPTIONS: dict[str, str] = {
 # Never-hallucinate-a-URL is enforced structurally, not just by instruction:
 # Claude is shown candidate search results with the URL withheld (title and
 # snippet text only) and picks which numbered candidate is the real match:
-# the URL that ends up saved is read from the original Tavily result by
+# the URL that ends up saved is read from the original Brave search result by
 # that index, never generated by the model. A URL Claude never sees cannot
 # appear, correctly or otherwise, in what it writes.
 CONTACT_MIN_SCORE = 60
 CONTACT_TRIGGER_STATUS = "new"
 CONTACT_SEARCH_QUERY_TEMPLATE = "{company_name} founder CEO LinkedIn"
-CONTACT_TAVILY_MAX_RESULTS = 8
+CONTACT_BRAVE_MAX_RESULTS = 8  # Brave Web Search results for LinkedIn lookup
 
 COMPANY_CONTACT_FIELDS: dict[str, str] = {
     "founder_name": "founder_name",
@@ -1080,7 +1070,7 @@ COMPANY_CONTACT_FIELD_TYPES: dict[str, tuple[str, dict | None]] = {
 }
 COMPANY_CONTACT_FIELD_DESCRIPTIONS: dict[str, str] = {
     "founder_linkedin_url": (
-        "Sourced verbatim from a Tavily search result URL, never model-generated. "
+        "Sourced verbatim from a Brave search result URL, never model-generated. "
         "Only linkedin.com/in/ URLs are accepted."
     ),
 }

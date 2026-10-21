@@ -1,8 +1,12 @@
-"""Tavily search layer for Project Scout.
+"""Brave Search layer for Project Scout (Engine A).
 
-Runs every configured query, normalises the results into a flat shape, and
-de-duplicates by URL within the run. Deduplication against Airtable happens
-later, in scout.py.
+Runs every configured query against the Brave Web Search API, normalises the
+results into a flat shape, and de-duplicates by URL within the run.
+Deduplication against Airtable happens later, in scout.py.
+
+Brave Web Search endpoint: https://api.search.brave.com/res/v1/web/search
+Auth: X-Subscription-Token header (BRAVE_API_KEY in config/env).
+No SDK required - plain requests calls.
 """
 
 from __future__ import annotations
@@ -12,11 +16,13 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import urlparse, urlunparse
 
-from tavily import TavilyClient
+import requests
 
 import config
 
 _AGGREGATOR_RE = re.compile("|".join(config.AGGREGATOR_URL_PATTERNS), re.IGNORECASE)
+
+_BRAVE_WEB_URL = "https://api.search.brave.com/res/v1/web/search"
 
 
 def is_blocked_domain(domain: str) -> bool:
@@ -53,7 +59,7 @@ class RawOpportunity:
     snippet: str
     source_query: str
     published_date: str = ""
-    tavily_score: float = 0.0
+    tavily_score: float = 0.0  # kept for schema compat; Brave has no equivalent
 
     @property
     def domain(self) -> str:
@@ -104,33 +110,38 @@ def canonical_url(url: str) -> str:
     return urlunparse((scheme, netloc, path, "", "", ""))
 
 
-class TavilySearcher:
-    """Thin wrapper over the Tavily client with Project Scout's defaults."""
+class BraveSearcher:
+    """Thin wrapper over the Brave Web Search API with Project Scout's defaults."""
 
     def __init__(self, api_key: str | None = None) -> None:
-        key = api_key or config.TAVILY_API_KEY
+        key = api_key or config.BRAVE_API_KEY
         if not key:
-            raise ValueError("TAVILY_API_KEY is not set. Check your .env file.")
-        self.client = TavilyClient(api_key=key)
+            raise ValueError("BRAVE_API_KEY is not set. Check your .env file.")
+        self._headers = {
+            "X-Subscription-Token": key,
+            "Accept": "application/json",
+        }
 
     def _search_one(self, query: str) -> list[dict]:
         params: dict = {
-            "query": query,
-            "search_depth": config.TAVILY_SEARCH_DEPTH,
-            "topic": config.TAVILY_TOPIC,
-            "max_results": config.TAVILY_MAX_RESULTS,
-            "include_answer": config.TAVILY_INCLUDE_ANSWER,
-            "include_raw_content": config.TAVILY_INCLUDE_RAW_CONTENT,
-            # Server-side exclusion. Tavily has a dedicated parameter for this;
-            # a "-site:x.com" operator inside the query string would just be
-            # tokenised as search text and dilute the query.
-            "exclude_domains": sorted(config.BLOCKED_DOMAINS),
+            "q": query,
+            "count": config.BRAVE_MAX_RESULTS,
+            "safesearch": "off",
         }
-        if config.TAVILY_TOPIC == "news":
-            params["days"] = config.TAVILY_DAYS
-
-        response = self.client.search(**params)
-        return response.get("results", []) or []
+        resp = requests.get(
+            _BRAVE_WEB_URL,
+            headers=self._headers,
+            params=params,
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw = data.get("web", {}).get("results", []) or []
+        # Brave has no server-side exclude_domains; post-filter here.
+        return [
+            r for r in raw
+            if not is_blocked_domain(urlparse(r.get("url", "")).netloc)
+        ]
 
     def run(self, queries: list[str] | None = None, verbose: bool = True) -> SearchReport:
         """Run every query and return the de-duplicated, filtered results."""
@@ -165,6 +176,8 @@ class TavilySearcher:
                     report.dropped_duplicate += 1
                     continue
 
+                # Blocked-domain check already done in _search_one, but also
+                # catches anything that slipped through canonical rewriting.
                 if is_blocked_domain(urlparse(url).netloc):
                     report.dropped_blocked += 1
                     continue
@@ -174,21 +187,26 @@ class TavilySearcher:
                     continue
 
                 title = (item.get("title") or "").strip()
-                snippet = (item.get("content") or "").strip()
+                # Brave uses "description" for the page snippet (not "content")
+                snippet = (item.get("description") or "").strip()
                 if len(f"{title} {snippet}".strip()) < config.MIN_SNIPPET_CHARS:
                     report.dropped_thin += 1
                     continue
 
                 seen.add(url)
                 kept += 1
+                # Brave provides "page_age" (ISO date) or "age" (relative str)
+                pub_date = (
+                    item.get("page_age") or item.get("age") or ""
+                ).strip()
                 report.opportunities.append(
                     RawOpportunity(
                         title=title,
                         url=url,
                         snippet=snippet,
                         source_query=query,
-                        published_date=(item.get("published_date") or "").strip(),
-                        tavily_score=float(item.get("score") or 0.0),
+                        published_date=pub_date,
+                        tavily_score=0.0,  # Brave has no relevance score
                     )
                 )
 

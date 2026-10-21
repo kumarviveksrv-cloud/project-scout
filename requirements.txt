@@ -1,5 +1,4 @@
 anthropic>=0.69.0
-tavily-python>=0.5.0
 pyairtable>=3.0.0
 python-dotenv>=1.0.1
 beautifulsoup4>=4.12.0
