@@ -81,10 +81,12 @@ class AirtableStore:
         decide what to do.
 
         Retries with exponential back-off on Airtable 429 rate-limit errors
-        (up to 5 attempts: waits 5s, 10s, 20s, 40s before giving up).
+        (up to 4 attempts: waits 30s, 60s, 120s before giving up).
+        Airtable's free-tier rate limit resets every 30 seconds, so we start
+        there rather than a shorter delay that would just fail again immediately.
         """
-        max_attempts = 5
-        delay = 5  # seconds before first retry
+        max_attempts = 4
+        delay = 30  # seconds before first retry — matches Airtable's reset window
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
