@@ -19,7 +19,7 @@ from collections import Counter
 import config
 from database import AirtableStore, SaveReport
 from scorer import OpportunityScorer, ScoredOpportunity
-from search import TavilySearcher
+from search import BraveSearcher
 
 RULE = "=" * config.CONSOLE_WIDTH
 THIN = "-" * config.CONSOLE_WIDTH
@@ -161,7 +161,7 @@ def main() -> int:
     # -- 1. search ---------------------------------------------------------
     header(f"SEARCHING  ({len(config.SEARCH_QUERIES)} queries)")
     try:
-        searcher = TavilySearcher()
+        searcher = BraveSearcher()
     except Exception as exc:
         print(f"\nCould not start Tavily: {exc}")
         return 1
