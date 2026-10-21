@@ -17,9 +17,10 @@ import sys
 from collections import Counter
 
 import config
+import known_keys_cache
 from database import AirtableStore, SaveReport
 from scorer import OpportunityScorer, ScoredOpportunity
-from search import BraveSearcher
+from search import BraveSearcher, canonical_url
 
 RULE = "=" * config.CONSOLE_WIDTH
 THIN = "-" * config.CONSOLE_WIDTH
@@ -186,7 +187,6 @@ def main() -> int:
         return 0
 
     # -- 2. dedupe against local cache (no Airtable read call needed) -------
-    import known_keys_cache
     store: AirtableStore | None = None
     if not args.dry_run:
         header("DEDUPLICATING")
